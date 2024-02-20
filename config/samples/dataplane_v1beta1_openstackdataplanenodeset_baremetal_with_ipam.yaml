@@ -4,31 +4,41 @@ metadata:
   name: openstack-edpm-ipam
 spec:
   services:
+    - repo-setup
     - download-cache
     - bootstrap
+    - reboot-os
+    - configure-ovs-dpdk
     - configure-network
     - validate-network
     - install-os
     - configure-os
     - run-os
-    - reboot-os
-    - install-certs
     - ovn
     - neutron-metadata
+      #    - neutron-sriov
     - libvirt
-    - nova
+    - nova-custom-ovsdpdk
     - telemetry
+
   baremetalSetTemplate:
     bmhLabelSelector:
       app: openstack
     ctlplaneInterface: enp1s0
     cloudUserName: cloud-admin
+      #    passwordSecret:
+      #      name: baremetalset-password-secret
+      #      namespace: openstack
+
   nodes:
-    edpm-compute-0:
-      hostName: edpm-compute-0
+    tigon20:
+      hostName: tigon20
+    tigon21:
+      hostName: tigon21
   networkAttachments:
     - ctlplane
   nodeTemplate:
+    ansibleSSHPrivateKeySecret: dataplane-ansible-ssh-private-key-secret
     networks:
       - name: ctlplane
         subnetName: subnet1
@@ -39,50 +49,116 @@ spec:
         subnetName: subnet1
       - name: tenant
         subnetName: subnet1
-    ansibleSSHPrivateKeySecret: dataplane-ansible-ssh-private-key-secret
     managementNetwork: ctlplane
     ansible:
       ansibleVars:
+         edpm_network_config_os_net_config_mappings:
+           tigon20:
+             nic1: 'ec:2a:72:40:b5:b8' # eno8303
+             nic2: '6c:fe:54:3f:c3:51' # ens1f1
+             nic3: '6c:fe:54:3f:c3:52' # ens1f2
+             nic4: '6c:fe:54:3f:c3:53' # ens1f3
+             nic5: 'b8:3f:d2:6f:ea:30' # ens2f0np0
+             nic6: 'b8:3f:d2:6f:ea:31' # ens2f1np1
+           tigon21:
+             nic1: 'ec:2a:72:40:c8:00' # eno8303
+             nic2: 'f8:f2:1e:03:82:42' # ens1f1
+             nic3: 'f8:f2:1e:03:82:44' # ens1f2
+             nic4: 'f8:f2:1e:03:82:46' # ens1f3
+             nic5: 'b8:3f:d2:6f:ee:20' # ens2f0np0
+             nic6: 'b8:3f:d2:6f:ee:21' # ens2f1np1
          edpm_network_config_template: |
-              ---
-              {% set mtu_list = [ctlplane_mtu] %}
-              {% for network in role_networks %}
-              {{ mtu_list.append(lookup('vars', networks_lower[network] ~ '_mtu')) }}
-              {%- endfor %}
-              {% set min_viable_mtu = mtu_list | max %}
-              network_config:
-              - type: ovs_bridge
-                name: {{ neutron_physical_bridge_name }}
-                mtu: {{ min_viable_mtu }}
-                use_dhcp: false
-                dns_servers: {{ ctlplane_dns_nameservers }}
-                domain: {{ dns_search_domains }}
-                addresses:
-                - ip_netmask: {{ ctlplane_ip }}/{{ ctlplane_cidr }}
-                routes: {{ ctlplane_host_routes }}
-                members:
-                - type: interface
-                  name: nic1
-                  mtu: {{ min_viable_mtu }}
-                  # force the MAC address of the bridge to this interface
-                  primary: true
-              {% for network in role_networks %}
-                - type: vlan
-                  mtu: {{ lookup('vars', networks_lower[network] ~ '_mtu') }}
-                  vlan_id: {{ lookup('vars', networks_lower[network] ~ '_vlan_id') }}
-                  addresses:
-                  - ip_netmask:
-                      {{ lookup('vars', networks_lower[network] ~ '_ip') }}/{{ lookup('vars', networks_lower[network] ~ '_cidr') }}
-                  routes: {{ lookup('vars', networks_lower[network] ~ '_host_routes') }}
-              {% endfor %}
+           ---
+           {% set mtu_list = [ctlplane_mtu] %}
+           {% for network in role_networks %}
+           {{ mtu_list.append(lookup('vars', networks_lower[network] ~ '_mtu')) }}
+           {%- endfor %}
+           {% set min_viable_mtu = mtu_list | max %}
+           network_config:
+           - type: ovs_bridge
+             name: br-osp
+             mtu: {{ min_viable_mtu }}
+             use_dhcp: false
+             dns_servers: {{ ctlplane_dns_nameservers }}
+             domain: {{ dns_search_domains }}
+             addresses:
+             - ip_netmask: {{ ctlplane_ip }}/{{ ctlplane_cidr }}
+             routes: {{ ctlplane_host_routes }}
+             members:
+             - type: interface
+               name: nic2
+               mtu: {{ min_viable_mtu }}
+               # force the MAC address of the bridge to this interface
+               primary: true
+           {% for network in role_networks if network not in ["External", "tenant"] %}
+             - type: vlan
+               mtu: {{ lookup('vars', networks_lower[network] ~ '_mtu') }}
+               vlan_id: {{ lookup('vars', networks_lower[network] ~ '_vlan_id') }}
+               addresses:
+               - ip_netmask:
+                   {{ lookup('vars', networks_lower[network] ~ '_ip') }}/{{ lookup('vars', networks_lower[network] ~ '_cidr') }}
+               routes: {{ lookup('vars', networks_lower[network] ~ '_host_routes') }}
+           {% endfor %}
+           - type: interface
+             name: nic1
+             use_dhcp: false
+             default: false
+           - type: ovs_user_bridge
+             name: br-link1
+             use_dhcp: false
+             ovs_extra: "set port br-link1 tag=55"
+             addresses:
+             - ip_netmask: {{ lookup('vars', networks_lower['tenant'] ~ '_ip') }}/{{ lookup('vars', networks_lower['tenant'] ~ '_cidr')}}
+             mtu: 9000
+             members:
+             - type: ovs_dpdk_port
+               name: dpdk1
+               members:
+               - type: interface
+                 name: nic3
+           - type: ovs_user_bridge
+             name: br-link2
+             use_dhcp: false
+             mtu: 9000
+             members:
+             - type: ovs_dpdk_port
+               name: dpdk2
+               members:
+               - type: interface
+                 name: nic4
+                   #           - type: sriov_pf
+                   #             name: nic5
+                   #             use_dhcp: false
+                   #             numvfs: 5
+                   #           - type: sriov_pf
+                   #             name: nic6
+                   #             use_dhcp: false
+                   #             numvfs: 5
+
          # These vars are for the network config templates themselves and are
          # considered EDPM network defaults.
-         neutron_physical_bridge_name: br-ex
-         neutron_public_interface_name: eth0
+         neutron_physical_bridge_name: br-access
+         neutron_public_interface_name: ens1f4
+         registry_url: quay.io/podified-antelope-centos9
+         image_tag: current-podified
+         image_prefix: openstack
+         edpm_chrony_ntp_servers:
+           - pool.ntp.org
          # edpm_nodes_validation
          edpm_nodes_validation_validate_controllers_icmp: false
          edpm_nodes_validation_validate_gateway_icmp: false
+         # edpm nfv ovs dpdk config
+         edpm_kernel_args: "default_hugepagesz=1GB hugepagesz=1G hugepages=64 iommu=pt intel_iommu=on tsx=off isolcpus=2-47,50-95"
+         edpm_tuned_profile: "cpu-partitioning"
+         edpm_tuned_isolated_cores: "2-47,50-95"
+         edpm_ovs_dpdk_pmd_core_list: "2,3,50,51"
+         edpm_ovs_dpdk_lcore_list: "0,48,1,49"
+         edpm_ovs_dpdk_socket_memory: "4096"
+         edpm_ovs_dpdk_memory_channels: "4"
+         edpm_ovs_dpdk_vhost_postcopy_support: "true"
+         edpm_ovn_bridge_mappings: ['access:br-access','dpdk2:br-link2','dpdk1:br-link1']
          gather_facts: false
          enable_debug: false
+         edpm_nova_libvirt_qemu_group: "hugetlbfs"
          # edpm firewall, change the allowed CIDR if needed
-         edpm_sshd_allowed_ranges: ['192.168.111.0/24']
+         edpm_sshd_allowed_ranges: ['192.168.122.0/24']
