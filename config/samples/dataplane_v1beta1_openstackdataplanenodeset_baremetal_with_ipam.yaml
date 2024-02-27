@@ -16,7 +16,7 @@ spec:
     - run-os
     - ovn
     - neutron-metadata
-      #    - neutron-sriov
+    - nova-custom-ovsdpdk-sriov
     - libvirt
     - nova-custom-ovsdpdk
     - telemetry
@@ -26,9 +26,9 @@ spec:
       app: openstack
     ctlplaneInterface: enp1s0
     cloudUserName: cloud-admin
-      #    passwordSecret:
-      #      name: baremetalset-password-secret
-      #      namespace: openstack
+    passwordSecret:
+      name: baremetalset-password-secret
+      namespace: openstack
 
   nodes:
     tigon20:
@@ -126,14 +126,14 @@ spec:
                members:
                - type: interface
                  name: nic4
-                   #           - type: sriov_pf
-                   #             name: nic5
-                   #             use_dhcp: false
-                   #             numvfs: 5
-                   #           - type: sriov_pf
-                   #             name: nic6
-                   #             use_dhcp: false
-                   #             numvfs: 5
+           - type: sriov_pf
+             name: nic5
+             use_dhcp: false
+             numvfs: 5
+           - type: sriov_pf
+             name: nic6
+             use_dhcp: false
+             numvfs: 5
 
          # These vars are for the network config templates themselves and are
          # considered EDPM network defaults.
@@ -162,3 +162,4 @@ spec:
          edpm_nova_libvirt_qemu_group: "hugetlbfs"
          # edpm firewall, change the allowed CIDR if needed
          edpm_sshd_allowed_ranges: ['192.168.122.0/24']
+         edpm_neutron_sriov_agent_SRIOV_NIC_physical_device_mappings: 'sriov1:ens2f0np0,sriov2:ens2f1np1'
